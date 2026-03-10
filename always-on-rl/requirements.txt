@@ -1,0 +1,14 @@
+# Memory layer
+fastapi>=0.115.0
+uvicorn>=0.32.0
+aiohttp>=3.11.0
+watchdog>=6.0.0
+
+# RL layer
+mlx>=0.22.0
+mlx-lm>=0.21.0
+
+# Shared
+pydantic>=2.10.0
+python-dotenv>=1.0.0
+httpx>=0.28.0
