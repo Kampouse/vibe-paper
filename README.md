@@ -15,6 +15,13 @@ A speculative architecture for handling long-term context in LLMs through graph-
 
 **Status:** Concept paper only. No implementation.
 
+### [NEAR + Nostr Integration](./near-nostr-integration.md)
+A zero-infrastructure approach to giving every NEAR account a Nostr identity using existing MPC infrastructure.
+
+**Key idea:** NEAR's v1.signer MPC contract already supports everything needed for Nostr signing. No custom contracts, no MPC modifications, just a web page.
+
+**Status:** Production-ready concept. ~150 lines of code, $0/month hosting.
+
 ## Background
 
 These ideas emerged from exploring research on:
