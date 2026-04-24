@@ -44,4 +44,13 @@ Sometimes you need to throw ideas at the wall and see what sticks. This is the w
 
 ---
 
-*Last updated: 2026-03-07*
+### [Red-Black Fractal Reasoning](./red-black-fractal-reasoning/paper.md)
+A hypothesis for structuring LLM agent context as a self-balancing red-black tree, where node colors encode epistemic status (verified observation vs. speculative inference) and tree invariants enforce reasoning discipline. Inspired by FractalBench's finding that models achieve 76% syntactic but only 4% semantic correctness on recursive tasks.
+
+**Key idea:** The gap between pattern matching and recursive abstraction is a context architecture problem, not a model capability problem. Red-black tree invariants → epistemic constraints → grounded reasoning.
+
+**Status:** Hypothesis only. No implementation. No benchmarks.
+
+---
+
+*Last updated: 2026-04-24*
