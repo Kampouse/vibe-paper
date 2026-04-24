@@ -1,778 +1,683 @@
-# Fractal Reasoning via Red-Black Tree Context Architecture: Self-Balancing Recursive Abstraction for LLM Agents
+# Fractal Problem Solving: Red-Black Tree Orchestration for LLM Agent Decomposition
 
 ## Abstract
 
-Current LLM agents process context as a flat, linear sequence of messages — fundamentally incompatible with the recursive structure of complex reasoning. We introduce the **Red-Black Fractal Context (RBFC)** architecture, which restructures agent context as a self-balancing red-black tree where node colors encode objective operational status: **RED = Generation** (output produced by the model) and **BLACK = Execution** (output produced by the runtime). Drawing on evidence that multimodal models achieve 76% syntactic but only 4% semantic correctness on recursive program synthesis tasks (Ondras & Šuppa, 2025), we argue that the gap between pattern matching and recursive abstraction is fundamentally a context architecture problem, not a model capability problem. RBFC externalizes branching state, enforces generate-then-execute ordering through tree invariants, and provides automatic O(log n) context balancing — making recursive reasoning tractable regardless of context length. We formalize the mapping from red-black tree invariants to execution discipline, propose a tree-rotation-based context compaction algorithm, and outline implementation paths for existing agent frameworks.
+We argue that the gap between LLM pattern matching and recursive abstraction — exemplified by FractalBench's 76% syntactic vs. 4% semantic correctness on fractal program synthesis (Ondras & Šuppa, 2025) — is fundamentally a problem decomposition problem, not a context architecture problem. We propose **Red-Black Problem Trees (RBPT)**: an orchestration layer that structures agent problem-solving as a self-balancing red-black tree where **RED nodes represent LLM generations** and **BLACK nodes represent runtime executions**, but critically, **the model never sees the tree**. The tree exists in the agent's runtime — it controls what gets generated, executed, retried, and composed. Each node is an independent generate-execute cycle with its own narrow context. The model receives a focused prompt, produces output, and the system handles branching, scheduling, verification, and composition. Red-black invariants become scheduling constraints: no consecutive REDs (don't spawn new sub-problems without executing current ones), equal black-height (all branches reach the same verification depth before composing), and BLACK leaves (every sub-problem terminates with a measured outcome). This converts the agent from a single model making linear guesses into a system that decomposes, executes, verifies, and composes — the same cycle at every scale. We formalize the architecture, map invariants to scheduling constraints, and propose experiments.
 
 ---
 
 ## 1. Introduction
 
-### 1.1 The Recursive Reasoning Gap
+### 1.1 The Real Failure Mode
 
-Recent work on visual-mathematical reasoning reveals a striking asymmetry in LLM capabilities. FractalBench (Ondras & Šuppa, 2025) evaluated four leading multimodal models on synthesizing fractal programs from images — tasks defined by Iterated Function Systems (IFS) with as few as 2-8 contraction mappings. Results:
+FractalBench (Ondras & Šuppa, 2025) asked multimodal models to look at a fractal image and write Python code that reproduces it. Results:
 
-| Capability | Performance |
-|-----------|-------------|
-| Syntactic code generation (code runs) | 76.1% |
-| Semantic correctness (reproduces fractal) | 4.2% |
-| Geometric transformations (Koch curves) | 17-21% |
-| Branching recursion (tree fractals) | <2% |
+| Metric | Score |
+|--------|-------|
+| Code runs without error | 76.1% |
+| Visually correct reproduction | 4.2% |
+| Koch curves (geometric transforms) | 17-21% |
+| Tree fractals (branching recursion) | <2% |
 
-The models can compose local operations but cannot infer generative rules — they produce *something* recursive but not the *right* recursion. This failure is not about intelligence; it is about architecture. The models are asked to perform recursive abstraction while operating on a context that is fundamentally linear.
+The paper's abstract calls this "a striking disconnect between syntactic competence and semantic understanding." But look at what actually happens: a single model receives an image and a prompt, and must produce an entire correct program in one shot. For a tree fractal, that means inferring branching logic, recursion depth, transformation parameters, and rendering code — all in a single generation.
 
-### 1.2 The Flat Context Problem
+No human programmer works this way. A human would:
+1. Write the branching logic
+2. Run it
+3. See it's wrong
+4. Fix it
+5. Run it again
+6. See it's closer
+7. Adjust parameters
+8. Run it again
+9. Done
 
-Every mainstream agent framework — LangChain, AutoGPT, Claude, GPT, nullclaw, ironclaw — represents context as an ordered list:
+The model never gets steps 2-8. It generates once and the system scores the output. The 4.2% success rate isn't surprising — it's the expected result of asking someone to write a perfect program without ever running it.
 
-```
-[system, user, assistant+tool, assistant+tool, ..., user]
-```
+### 1.2 The Problem Isn't Context Shape. It's Control Flow.
 
-This is a list. A sequence. Linear. It has no concept of branching, nesting, or self-similar sub-structure. Yet the reasoning tasks we care about — debugging, system design, mathematical proof, multi-step planning — are inherently recursive. They decompose into sub-problems that have the same structure as the whole.
+Previous approaches to improving agent reasoning focus on context structure — how to organize the information the model sees. Chain-of-thought adds reasoning steps. Tree-of-thought adds branching exploration. Graph RAG adds retrieval. All of these assume the model needs to *see more* or *see it differently* to perform better.
 
-When an agent spawns sub-tasks (tool calls, delegated agents, parallel execution), the results are flattened back into the linear stream. The recursive structure of the computation is destroyed before the model ever sees it. The model must reconstruct what was a tree from what is now a list.
+We argue the opposite. The model doesn't need to see the tree. The model needs to be *part* of a tree.
+
+Consider a human software team. No individual engineer sees the entire project plan as a tree data structure. Each engineer receives a task, produces code, submits it for review, gets feedback, and iterates. The *manager* holds the tree — tracking which tasks are done, which are blocked, which need reassignment. The engineer just works on their node.
+
+RBPT applies this pattern to LLM agents. The system is the manager. The model is the engineer. The tree exists in the runtime, not in the context window.
 
 ### 1.3 Our Hypothesis
 
-**If context is structured as a self-balancing red-black tree — where node colors objectively encode whether content was generated by the model (RED) or produced by runtime execution (BLACK) — then LLM agents will exhibit significantly improved recursive reasoning, particularly on tasks requiring branching abstraction and iterative refinement.**
+**If an agent orchestration layer decomposes problems into a red-black tree of independent generate-execute cycles — where the model operates on narrow sub-problems and the system handles branching, execution, verification, and composition — then performance on recursive tasks will improve significantly, and the improvement will scale with problem complexity (deeper trees help more).**
 
-This is not a model change. It is a context architecture change. The model stays the same. What changes is the shape of the information it receives and the discipline enforced by the tree's structural invariants.
-
----
-
-## 2. Background & Related Work
-
-### 2.1 Fractal Thinking in AI
-
-Fractals are objects defined by self-similarity across scales. An IFS with contraction maps {f₁, f₂, ..., fₖ} generates a fractal F where F = ∪fᵢ(F). The entire structure is contained in the mapping rules — infinite complexity from finite specification.
-
-This property makes fractals ideal probes for recursive abstraction: to reproduce a fractal, you must infer the generative rule, not copy the visible pattern. FractalBench exploited this to show that current models can recognize self-similarity but cannot infer precise IFS parameters.
-
-### 2.2 Structured Context Approaches
-
-| Approach | Structure | Recursion Support | Self-Balancing |
-|----------|-----------|-------------------|----------------|
-| Linear context (standard) | Flat list | None | N/A |
-| Hierarchical summarization | Tree of summaries | Single path | No |
-| Graph RAG | Arbitrary graph | Via traversal | No |
-| Constraint Composite Graphs | DAG of decisions | Dependency chains | No |
-| **RBFC (ours)** | **Red-black tree** | **Intrinsic** | **Yes** |
-
-### 2.3 Red-Black Trees
-
-Red-black trees are self-balancing binary search trees with five invariants that guarantee O(log n) operations:
-
-1. Every node is either red or black
-2. The root is black
-3. Every leaf (NIL) is black
-4. If a node is red, both its children are black
-5. Every path from a node to its descendant NIL nodes contains the same number of black nodes
-
-These invariants ensure the tree height is at most 2·log₂(n+1), providing guaranteed logarithmic balance regardless of insertion order. This property has been used in operating systems (Linux completely fair scheduler, CFS), databases (MySQL InnoDB), and language runtimes (Java TreeMap) — but never, to our knowledge, as a reasoning architecture.
+This is not a prompt engineering technique. This is an agent architecture. The model stays the same. What changes is how problems are broken down and how results are composed.
 
 ---
 
-## 3. The Red-Black Fractal Context
+## 2. The Architecture
 
-### 3.1 Core Mapping: Tree Invariants → Execution Discipline
+### 2.1 The Model Doesn't See the Tree
 
-We assign objective operational semantics to node colors:
-
-- **RED (Generation):** Content produced by the LLM. Code, hypotheses, plans, natural language responses, tool call arguments — anything the model *generated*.
-- **BLACK (Execution):** Content produced by the runtime. Tool output, test results, error messages, rendered images, measurements, user input — anything the system *executed* or *observed*.
-
-This distinction is not subjective. The system knows with certainty which nodes are RED and which are BLACK — it knows because it produced the BLACK nodes itself. The model never needs to self-assess its confidence. The color is determined by provenance, not opinion.
-
-The five red-black invariants then become execution discipline rules:
-
-**Invariant 1: Every node is RED or BLACK.**
-
-→ Every piece of context has a clear provenance. It was either generated by the model or produced by execution. There is no ambiguous third state.
-
-**Invariant 2: The root is BLACK.**
-
-→ The initial user request is execution-grounded. It is something that actually happened — a real input from the real world. The model did not generate it; the user did. All reasoning grows from this observed ground truth.
-
-**Invariant 3: Every leaf (NIL) is BLACK.**
-
-→ Every terminated branch of reasoning ends at an execution result. A branch never ends on a generation that was never tested. Dead ends are error messages, timeouts, test failures — objective outcomes from the runtime, not dangling hypotheses.
-
-**Invariant 4: RED nodes must have BLACK children.**
-
-→ **Every generation must be followed by execution.** The model writes code, the system runs it. The model proposes a plan, the system attempts it. No two consecutive model outputs without a runtime result in between. You cannot generate without executing.
-
-This is the central enforcement mechanism. It prevents the most common failure mode: the model producing a long chain of plausible-looking output that is never tested against reality.
-
-**Invariant 5: Equal black-height on all root-to-leaf paths.**
-
-→ **Every line of reasoning has been equally tested.** The number of execution results along any path from root to leaf is the same. You cannot go arbitrarily deep in one branch without proportionally more runs. A branch with 10 generations and 2 executions is under-tested relative to a branch with 5 generations and 4 executions. The tree will not allow it — rotation restructures to promote the execution-dense subtree.
-
-### 3.2 Why This Matters
-
-The FractalBench results map directly onto these invariants:
-
-| FractalBench Finding | RBFC Explanation |
-|---------------------|-------------------|
-| 76% code runs but 4% is correct | Models generate code (RED) and stop. They never execute and compare to reference (no BLACK child to verify). The tree has a RED leaf — invariant #3 violated. |
-| Koch curves succeed at 17-21% | Geometric transforms are simple enough that a single generate-execute cycle sometimes produces the right answer. One RED → one BLACK → done. |
-| Tree fractals fail at <2% | Branching recursion requires N independent execution paths (N BLACK nodes across branches). The model tries to handle branching with a single iterative loop — one execution (BLACK) instead of N — invariant #5 violated. |
-| CoT hurts fractal tasks | Chain-of-thought produces RED→RED→RED (generation on generation, no execution). The model writes paragraphs of reasoning without running anything. Invariant #4 violated. |
-
-### 3.3 Tree Structure
+This is the central design principle. The tree exists in the agent's runtime — in code, not in context. At each node, the model receives:
 
 ```
-                         BLACK: User request (observed input)
-                        /                              \
-              RED: Generate code A              RED: Generate code B
-              /                \               /                \
-     BLACK: Execute A       BLACK: Execute B  BLACK: Execute B  BLACK: Execute B
-     (IoU: 0.34)            (timeout)        (IoU: 0.12)        (IoU: 0.91)
-          |                     |                  |                  |
-     RED: Revise A        RED: Retry B       RED: Revise B       ACCEPTED ✓
-          |                                          |
-     BLACK: Execute A'                          BLACK: Execute B'
-     (IoU: 0.88)                                (IoU: 0.94)
-          |                                          |
-     RED: Final tweak                           ACCEPTED ✓
-          |
-     BLACK: Execute A''
-     (IoU: 0.96)
-          |
-     ACCEPTED ✓
+Task: Draw a Koch curve with 4 levels of recursion.
+Reference image: [attached]
+Interface: turtle.forward(n), turtle.left(angle), turtle.right(angle)
+Acceptance criteria: rendered output must match reference (IoU > 0.95)
 ```
 
-Each subtree is itself a valid red-black tree. Every level follows the same rules. RED (generate) always has BLACK children (execute). Every leaf is BLACK (a test result, never a dangling generation). This is self-similarity — the defining property of a fractal.
+The model writes code. The system runs it. The system checks the result. The model never knows whether it's at the root of a tree, a leaf, or somewhere in the middle. It just receives a task and produces output.
 
-The generate-execute cycle is the IFS contraction map. Applied recursively, it produces the tree. The tree's attractor is the correct answer — the state where execution confirms generation.
+### 2.2 What the Tree Actually Is
 
----
+The tree is the agent's execution plan — the control flow of problem decomposition. Each node is a generate-execute cycle:
 
-## 4. Formal Definition
+```
+ProblemTree:
+  Root: "Build fractal renderer"
+  ├── Node: "Implement Koch curve"
+  │   ├── Generation 1 → Execution 1 → IoU 0.34 → FAIL
+  │   ├── Generation 2 → Execution 2 → IoU 0.72 → FAIL
+  │   └── Generation 3 → Execution 3 → IoU 0.96 → PASS
+  ├── Node: "Implement Sierpinski triangle"
+  │   ├── Generation 1 → Execution 1 → IoU 0.88 → PASS
+  ├── Node: "Implement tree fractal"
+  │   ├── Node: "Implement branching logic"
+  │   │   ├── Generation 1 → Execution 1 → recursion error → FAIL
+  │   │   └── Generation 2 → Execution 2 → renders correctly → PASS
+  │   ├── Node: "Implement left subtree rendering"
+  │   │   └── Generation 1 → Execution 1 → IoU 0.91 → PASS
+  │   └── Node: "Implement right subtree rendering"
+  │       ├── Generation 1 → Execution 1 → IoU 0.15 → FAIL
+  │       └── Generation 2 → Execution 2 → IoU 0.93 → PASS
+  └── Compose: "Integrate all three into unified renderer"
+      └── Generation 1 → Execution 1 → all tests pass → DONE
+```
 
-### 4.1 Context Node
+Notice: the tree fractal that failed at <2% when handled by a single model call is now decomposed into 3 sub-problems, each with its own generate-execute cycle. Each sub-problem is simpler than the whole. The branching logic, the left subtree, and the right subtree are independent tasks that can be solved independently and composed.
+
+### 2.3 Node Types
 
 ```python
 @dataclass
-class ContextNode:
-    content: str                    # The actual message/content
-    role: str                       # "user", "assistant", "tool", "system"
-    color: Literal["red", "black"]  # Operational status, determined by provenance
+class ProblemNode:
+    """A single node in the problem tree."""
+    id: str
+    task: str                         # What this node needs to accomplish
+    acceptance_criteria: str          # How to judge success (IoU, test, etc.)
+    parent: Optional["ProblemNode"] = None
+    children: List["ProblemNode"] = field(default_factory=list)
     
-    # Tree structure
-    parent: Optional["ContextNode"] = None
-    left: Optional["ContextNode"] = None
-    right: Optional["ContextNode"] = None
+    # Generate-execute history at this node
+    attempts: List[GenerateExecuteCycle] = field(default_factory=list)
+    status: Literal["pending", "in_progress", "passed", "failed", "blocked"] = "pending"
     
-    # Metadata
-    black_height: int = 0           # Number of BLACK nodes to NIL leaf
-    depth: int = 0                  # Depth from root
-    timestamp: float = 0.0          # When this node was created
-    execution_meta: Optional[dict] = None  # For BLACK nodes: exit code, IoU, latency, etc.
-    generation_meta: Optional[dict] = None  # For RED nodes: model, tokens, temperature, etc.
+    # Tree color — determined by last action taken
+    # RED = model just generated, awaiting execution
+    # BLACK = system just executed, result available
+    last_action: Literal["generation", "execution"] = None
     
-    @staticmethod
-    def from_generation(content: str, role: str, meta: dict = None) -> "ContextNode":
-        """Create a RED node — content produced by the model."""
-        return ContextNode(content=content, role=role, color="red", generation_meta=meta)
+    @property
+    def color(self) -> str:
+        return "red" if self.last_action == "generation" else "black"
     
-    @staticmethod
-    def from_execution(content: str, role: str, meta: dict = None) -> "ContextNode":
-        """Create a BLACK node — content produced by the runtime."""
-        return ContextNode(content=content, role=role, color="black", execution_meta=meta)
+    @property
+    def black_height(self) -> int:
+        """Number of execution results in this node's history."""
+        return sum(1 for a in self.attempts if a.execution is not None)
+
+@dataclass
+class GenerateExecuteCycle:
+    generation: Optional[str] = None        # RED: what the model produced
+    execution: Optional[ExecutionResult] = None  # BLACK: what the runtime produced
+    passed: Optional[bool] = None
 ```
 
-Note: there is no `from_assessment()` or `from_self_evaluation()`. Color is never determined by the model's opinion about its own output. It is always determined by provenance — who or what produced the content.
+### 2.4 The Scheduler
 
-### 4.2 Invariant Validation
+The scheduler is the runtime that manages the tree. It decides what to generate, what to execute, and when to compose. It enforces the red-black invariants as scheduling constraints.
 
 ```python
-class RBFCValidator:
-    """Enforces red-black invariants on the context tree."""
+class RBFCScheduler:
+    """Orchestrates problem decomposition as a red-black tree.
     
-    def validate(self, root: ContextNode) -> List[str]:
-        violations = []
-        
-        # Invariant 2: Root must be black (user input is execution-grounded)
-        if root and root.color == "red":
-            violations.append("ROOT_NOT_BLACK: root must be observed input, not model generation")
-        
-        # Invariant 4: Red nodes must have black children (generate → execute)
-        self._check_red_children(root, violations)
-        
-        # Invariant 5: Equal black-height on all paths (equal testing across branches)
-        heights = self._collect_black_heights(root)
-        if len(set(heights)) > 1:
-            violations.append(
-                f"BLACK_HEIGHT_MISMATCH: branches have unequal execution counts: {set(heights)}"
-            )
-        
-        # Invariant 3: All leaves are black (no branch ends on untested generation)
-        self._check_leaf_colors(root, violations)
-        
-        return violations
-    
-    def _check_red_children(self, node, violations):
-        if node is None:
-            return
-        if node.color == "red":
-            if node.left and node.left.color == "red":
-                violations.append(
-                    f"CONSECUTIVE_GENERATION: '{node.left.content[:50]}...' follows "
-                    f"'{node.content[:50]}...' without execution in between"
-                )
-            if node.right and node.right.color == "red":
-                violations.append(
-                    f"CONSECUTIVE_GENERATION: '{node.right.content[:50]}...' follows "
-                    f"'{node.content[:50]}...' without execution in between"
-                )
-        self._check_red_children(node.left, violations)
-        self._check_red_children(node.right, violations)
-    
-    def _check_leaf_colors(self, node, violations):
-        if node is None:
-            return
-        if node.left is None and node.right is None:
-            if node.color == "red":
-                violations.append(
-                    f"UNTESTED_LEAF: branch terminates on generation "
-                    f"'{node.content[:50]}...' without execution result"
-                )
-        self._check_leaf_colors(node.left, violations)
-        self._check_leaf_colors(node.right, violations)
-    
-    def _collect_black_heights(self, node, current_height=0):
-        if node is None:
-            return [current_height]
-        h = current_height + (1 if node.color == "black" else 0)
-        return self._collect_black_heights(node.left, h) + \
-               self._collect_black_heights(node.right, h)
-```
-
-### 4.3 Insertion with Rebalancing
-
-When a new reasoning step is added to context, it follows standard red-black insertion with domain-specific semantics:
-
-```python
-class RBFCTree:
-    def insert_generation(self, content: str, model_output: dict, 
-                          parent_id: str = None) -> ContextNode:
-        """Insert a RED node — content produced by the model."""
-        node = ContextNode.from_generation(
-            content=content, 
-            role="assistant",
-            meta=model_output  # model name, tokens used, temperature, etc.
-        )
-        self._bst_insert(node, parent_id)
-        self._rebalance(node)
-        return node
-    
-    def insert_execution(self, content: str, run_result: dict,
-                         parent_id: str = None) -> ContextNode:
-        """Insert a BLACK node — content produced by the runtime."""
-        node = ContextNode.from_execution(
-            content=content,
-            role="tool",
-            meta=run_result  # exit code, stdout, IoU score, latency, etc.
-        )
-        self._bst_insert(node, parent_id)
-        self._rebalance(node)
-        return node
-    
-    def _rebalance(self, node):
-        """Apply rotations to maintain red-black invariants.
-        
-        In the execution context, rotation means:
-        - Promote an execution result (BLACK) to anchor a deep branch
-        - Demote a generation (RED) that lacks sufficient testing
-        - Restructure the tree so under-tested branches get more runs
-        """
-        while node.parent and node.parent.color == "red":
-            # Standard red-black rotation cases
-            # Case 1: Uncle is red → recolor
-            # Case 2: Uncle is black, node is inner child → rotate
-            # Case 3: Uncle is black, node is outer child → rotate + recolor
-            self._apply_rotation(node)
-        
-        # Ensure root stays black (Invariant 2)
-        self.root.color = "black"
-    
-    def _apply_rotation(self, node):
-        """
-        Execution rotation: when a branch has too many generations (RED)
-        relative to executions (BLACK), restructure to promote the most
-        execution-dense subtree.
-        
-        This is the mechanism that prevents generate-only spirals.
-        """
-        # ... standard RB rotation logic ...
-        # See CLRS Chapter 13 for algorithmic details
-        pass
-```
-
----
-
-## 5. Context Compaction via Tree Rotation
-
-### 5.1 The Problem with Linear Compaction
-
-Current context compaction strategies (summarization, sliding window, token truncation) operate on the flat message list. They decide *what to keep* based on recency, relevance scores, or token budgets. This is lossy and structure-agnostic — a 50-turn reasoning chain might lose its middle, breaking the logical arc.
-
-Critically, linear compaction cannot distinguish between a generation (model output) and an execution (runtime result). When it summarizes 10 messages into 1, it merges RED and BLACK nodes into an undifferentiated blob. The execution history — which generations were tested and what the results were — is destroyed.
-
-### 5.2 Rotation-Based Compaction
-
-RBFC provides a *principled* alternative. Instead of discarding messages, we restructure the tree. Red-black rotations are the mechanism:
-
-**Left rotation (promote right child):**
-When a right-heavy branch has accumulated too many generations (RED) without proportional executions (BLACK), rotate to promote an execution-dense subtree as the new anchor.
-
-```
-Before rotation:          After rotation:
-    B (test: IoU 0.88)       D (promoted: IoU 0.91)
-     \                         /
-      R (generated code)      B (demoted: IoU 0.88)
-     / \                       \
-    C   E                     C
-  (gen) (test: IoU 0.91)    (now demoted)
-```
-
-**Right rotation (promote left child):** Mirror operation.
-
-**The insight:** rotation doesn't delete information — it *restructures* it. A deep generate-heavy branch is collapsed by promoting its most execution-grounded subtree. The information is preserved in a more balanced configuration.
-
-### 5.3 Black-Height as Execution Density
-
-The black-height of a subtree measures how many execution results anchor it. During compaction, black-height is the metric for what to preserve:
-
-```python
-def compact_context(tree: RBFCTree, max_nodes: int) -> RBFCTree:
-    """Compact context by rotating to promote execution-dense subtrees.
-    
-    Unlike summarization (which destroys structure), rotation preserves
-    all execution results (BLACK nodes) and only collapses generate-only
-    paths (RED chains without BLACK grounding).
+    The scheduler owns the tree. The model is called per-node.
     """
-    while tree.node_count > max_nodes:
-        # Find the subtree with highest execution density (most BLACK per node)
-        target = find_most_execution_dense_subtree(tree)
+    
+    def __init__(self, model, executor, max_retries=5):
+        self.model = model
+        self.executor = executor
+        self.max_retries = max_retries
+        self.tree: Optional[ProblemNode] = None
+    
+    def solve(self, problem: str, acceptance_criteria: str) -> str:
+        """Entry point: solve a problem using tree decomposition."""
+        self.tree = ProblemNode(
+            id="root",
+            task=problem,
+            acceptance_criteria=acceptance_criteria,
+        )
+        self.tree.last_action = "execution"  # Root is BLACK (user provided the problem)
         
-        if target:
-            # Rotate to flatten under this execution-proven anchor
-            tree.rotate(target)
+        return self._solve_node(self.tree)
+    
+    def _solve_node(self, node: ProblemNode) -> str:
+        """Solve a single node: decompose if needed, generate, execute, verify."""
+        
+        # Step 1: Should this node be decomposed into sub-problems?
+        sub_problems = self._try_decompose(node)
+        
+        if sub_problems:
+            # Decompose into children
+            for sp in sub_problems:
+                child = ProblemNode(
+                    id=f"{node.id}.{len(node.children)}",
+                    task=sp.task,
+                    acceptance_criteria=sp.criteria,
+                    parent=node,
+                )
+                node.children.append(child)
+            
+            # Solve each child independently
+            results = {}
+            for child in node.children:
+                results[child.id] = self._solve_node(child)
+            
+            # Step 2: Compose child results
+            return self._compose(node, results)
+        
         else:
-            # No execution-dense subtree found — prune the generation-heaviest
-            # branch (most RED nodes per BLACK node)
-            prune_generation_heaviest_branch(tree)
+            # Step 1 (alt): Single-node solve — generate and execute
+            return self._generate_execute_loop(node)
     
-    return tree
-```
-
-### 5.4 Comparison with Existing Approaches
-
-| Method | What it discards | Gen/Exec distinction? | Structure preserved? | Balancing |
-|--------|-----------------|-----------------------|---------------------|-----------|
-| Sliding window | Oldest messages | No | No | None |
-| Summarization | Detail, nuance | No | Partially | None |
-| Token truncation | Whatever exceeds limit | No | No | None |
-| Graph RAG | Unretrieved nodes | No | Yes (graph) | No |
-| **RBFC rotation** | **Untested generations only** | **Yes — by construction** | **Yes (tree)** | **O(log n) guaranteed** |
-
----
-
-## 6. Integration with Agent Loops
-
-### 6.1 The Generate-Execute Cycle as IFS
-
-The standard agent loop is:
-
-```
-GENERATE → EXECUTE → OBSERVE → (repeat or stop)
-```
-
-This is an Iterated Function System. Each iteration applies the same transformation (generate → execute → observe) to the current state. The attractor of this IFS is the final verified answer.
-
-In RBFC, each iteration becomes a subtree:
-
-```
-Iteration 1:
-  BLACK: user request (observed)
-  └── RED: model generates code
-      └── BLACK: runtime executes → output (IoU: 0.34)
-          └── RED: model reads output, generates revision
-              └── BLACK: runtime executes → output (IoU: 0.88)
-                  └── RED: model generates final tweak
-                      └── BLACK: runtime executes → output (IoU: 0.96) ✓
-
-Iteration 2 (branching, same structure):
-  └── RED: model generates parallel test for edge case
-      ├── BLACK: runtime executes test A → fail
-      │   └── RED: model generates fix for A
-      │       └── BLACK: runtime executes fix → pass ✓
-      └── BLACK: runtime executes test B → pass ✓
-```
-
-Each iteration is a self-similar copy of the generate-execute pattern. The tree *is* the fractal. The agent doesn't just execute a loop — it grows a fractal of generation and execution.
-
-### 6.2 Enforcement in the System Prompt
-
-```python
-EXECUTION_PROTOCOL = """
-You are operating within a Red-Black Fractal Context.
-
-COLORS (determined by the system, not by you):
-- [R] RED = Generation: content you produce (code, text, plans)
-- [B] BLACK = Execution: content the runtime produces (test results,
-  error messages, rendered output, measurements)
-
-RULES (enforced by the system):
-1. Every [R] must be followed by a [B]. Generate, then execute.
-   You cannot produce two generations without an execution in between.
-2. The system will run your code and return results as [B].
-3. When you receive a [B], read the execution result carefully.
-   It is objective truth — the runtime does not lie.
-4. Branch when needed: if a problem has independent sub-problems,
-   generate solutions for each branch. Each will be executed independently.
-5. Stop when execution confirms correctness. Do not generate after success.
-
-WHAT THIS MEANS FOR YOU:
-- Write code → the system runs it → you see the result → you revise
-- Do NOT write long explanations without running anything
-- Do NOT claim success without execution confirmation
-- Do NOT chain multiple code blocks — write one, wait for the run, iterate
-
-The system will reject your output if you violate these rules.
-"""
-```
-
-### 6.3 The Agent Loop Implementation
-
-```python
-class RBFCContext:
-    """Manages agent context as a red-black tree of generations and executions."""
-    
-    def __init__(self, base_agent, max_context_nodes=128):
-        self.agent = base_agent
-        self.tree = RBFCTree()
-        self.validator = RBFCValidator()
-        self.max_nodes = max_context_nodes
-    
-    def chat(self, user_message: str) -> str:
-        # 1. Insert user message as BLACK (it was observed, not generated)
-        self.tree.insert_execution(
-            content=user_message, 
-            role="user",
-            run_result={"source": "user_input"}
-        )
+    def _generate_execute_loop(self, node: ProblemNode) -> str:
+        """Core loop: generate → execute → verify → iterate or fail."""
         
-        # 2. Flatten tree to linear context for the LLM
-        context = self._tree_to_context()
-        
-        # 3. Get model generation (this is a RED node)
-        response = self.agent.generate(context)
-        
-        # 4. Insert model output as RED
-        gen_node = self.tree.insert_generation(
-            content=response,
-            role="assistant",
-            model_output={"model": self.agent.model_name, "tokens": len(response)}
-        )
-        
-        # 5. If the model wants to execute something, run it → BLACK node
-        tool_calls = self._parse_tool_calls(response)
-        for call in tool_calls:
-            result = self._execute_tool(call)
-            exec_node = self.tree.insert_execution(
-                content=result.output,
-                role="tool",
-                run_result={
-                    "tool": call.name,
-                    "exit_code": result.exit_code,
-                    "duration_ms": result.duration_ms,
-                    "iou": result.iou if hasattr(result, 'iou') else None,
-                },
-                parent_id=gen_node.id
+        for attempt in range(self.max_retries):
+            # RED: Generate
+            generation = self.model.generate(
+                task=node.task,
+                acceptance_criteria=node.acceptance_criteria,
+                previous_attempts=node.attempts,  # Feed back failures
             )
+            
+            cycle = GenerateExecuteCycle(generation=generation)
+            node.last_action = "generation"  # Node is RED
+            node.status = "in_progress"
+            
+            # Invariant check: no consecutive REDs at this node
+            # (This is guaranteed by the loop structure — we always execute after generate)
+            
+            # BLACK: Execute
+            result = self.executor.run(generation)
+            cycle.execution = result
+            node.last_action = "execution"  # Node is BLACK
+            cycle.passed = self._check_acceptance(result, node.acceptance_criteria)
+            node.attempts.append(cycle)
+            
+            if cycle.passed:
+                node.status = "passed"
+                return generation
+            
+            # Failed — feed back the execution result for next attempt
+            # The model sees what went wrong (BLACK) and generates a fix (RED)
         
-        # 6. Validate invariants
-        violations = self.validator.validate(self.tree.root)
-        if violations:
-            # If model generated without execution following (RED leaf),
-            # force an execution by asking the model to run something
-            return self._request_execution(violations)
-        
-        # 7. Compact if needed (rotation-based, not summarization)
-        if self.tree.node_count > self.max_nodes:
-            self.tree = compact_context(self.tree, self.max_nodes)
-        
-        return response
+        node.status = "failed"
+        return generation  # Return best attempt even if not passing
     
-    def _request_execution(self, violations: List[str]) -> str:
-        """When invariants are violated, prompt the model to execute."""
-        hint = ""
-        for v in violations:
-            if "CONSECUTIVE_GENERATION" in v:
-                hint = "You generated multiple times without executing. Run your code or call a tool before continuing."
-            elif "UNTESTED_LEAF" in v:
-                hint = "Your last output was never tested. Execute it before stopping."
+    def _try_decompose(self, node: ProblemNode) -> List[SubProblem]:
+        """Ask the model whether this problem should be broken into sub-problems.
         
-        return f"[SYSTEM: Invariant violation — {hint}]"
-    
-    def _tree_to_context(self) -> str:
-        """Flatten the RB tree to linear context, preserving structure via indentation."""
-        lines = []
-        self._inorder_traverse(self.tree.root, lines, depth=0)
-        return "\n".join(lines)
-    
-    def _inorder_traverse(self, node, lines, depth):
-        if node is None:
-            return
-        prefix = "  " * depth
-        marker = "[B]" if node.color == "black" else "[R]"
-        role = node.role.upper()
+        This is the branching point — where a single node becomes a subtree.
+        The model decides IF to branch and WHAT the sub-problems are.
+        The system handles the rest.
+        """
+        # For simple tasks, don't decompose
+        if self._is_simple(node.task):
+            return []
         
-        # For BLACK nodes, include execution metadata
-        if node.color == "black" and node.execution_meta:
-            meta = node.execution_meta
-            if meta.get("iou") is not None:
-                lines.append(f"{prefix}{marker} [{role}] {node.content} (IoU: {meta['iou']})")
-            elif meta.get("exit_code") is not None:
-                lines.append(f"{prefix}{marker} [{role}] {node.content} (exit: {meta['exit_code']})")
-            else:
-                lines.append(f"{prefix}{marker} [{role}] {node.content}")
+        decomposition = self.model.decompose(node.task)
+        
+        if not decomposition.sub_problems:
+            return []
+        
+        return decomposition.sub_problems
+    
+    def _check_acceptance(self, result: ExecutionResult, criteria: str) -> bool:
+        """BLACK leaf enforcement: every node terminates with a measurable outcome."""
+        if criteria.startswith("IoU"):
+            threshold = float(criteria.split(">")[-1].strip())
+            return result.iou >= threshold
+        elif criteria.startswith("test"):
+            return result.exit_code == 0 and result.tests_passed
         else:
-            lines.append(f"{prefix}{marker} [{role}] {node.content}")
+            return result.success
+    
+    def _compose(self, node: ProblemNode, child_results: Dict[str, str]) -> str:
+        """Compose child results into a solution for the parent node.
         
-        self._inorder_traverse(node.left, lines, depth + 1)
-        self._inorder_traverse(node.right, lines, depth + 1)
+        Invariant enforcement: all children must have BLACK status (completed execution)
+        before composition proceeds.
+        """
+        # Check equal black-height: all children must be equally tested
+        black_heights = [c.black_height for c in node.children]
+        if len(set(black_heights)) > 1:
+            # Some branches were tested more than others
+            # This is a black-height violation — re-run under-tested branches
+            min_bh = min(black_heights)
+            for child in node.children:
+                if child.black_height > min_bh:
+                    # This branch had more attempts — could indicate it was harder
+                    # Log but don't block composition
+                    pass
+        
+        # All children have BLACK leaf status (passed or failed with measured outcome)
+        for child in node.children:
+            if child.status == "pending":
+                raise RuntimeError(f"Cannot compose: child {child.id} has no execution result")
+        
+        # Generate composition
+        composition = self.model.compose(
+            parent_task=node.task,
+            child_results=child_results,
+            child_statuses={c.id: c.status for c in node.children},
+        )
+        
+        # Execute the composed solution
+        result = self.executor.run(composition)
+        cycle = GenerateExecuteCycle(generation=composition, execution=result)
+        cycle.passed = self._check_acceptance(result, node.acceptance_criteria)
+        node.attempts.append(cycle)
+        node.last_action = "execution"  # BLACK
+        
+        if cycle.passed:
+            node.status = "passed"
+        else:
+            node.status = "failed"
+        
+        return composition
 ```
 
 ---
 
-## 7. Why This Should Work: Theoretical Arguments
+## 3. Red-Black Invariants as Scheduling Constraints
 
-### 7.1 Fractal Self-Similarity Provides Compositional Generalization
+The invariants don't constrain the model. They constrain the scheduler. The model is unaware of them.
 
-A fractal is defined by rules that apply identically at every scale. In RBFC, the generate-execute cycle has the same structure at every depth:
+### 3.1 Invariant: No Consecutive REDs
 
-- Depth 0: Generate plan → Execute → Observe result
-- Depth 1: Generate sub-plan → Execute → Observe result
-- Depth n: ... same pattern ...
+**Meaning:** The scheduler never allows two generation steps without an execution in between.
 
-This means a model that learns to generate-then-execute at one depth should transfer to all depths. The pattern is *self-similar* — it's a fractal. Current flat contexts don't exhibit this property because the generate-execute structure is lost during flattening into a linear message list.
+**Implementation:** The `_generate_execute_loop` always pairs a generate call with an execute call. There is no code path where generation happens without subsequent execution. This isn't a rule the model follows — it's a structural guarantee of the scheduler.
 
-### 7.2 Invariant Enforcement Prevents the Known Failure Modes
+**What this prevents:** The model generating a long chain of "let me think about this..." without ever running anything. The scheduler simply doesn't have a "generate without executing" code path.
 
-The specific failures observed in FractalBench map directly to invariant violations:
+### 3.2 Invariant: Root is BLACK
 
-**Failure: 76% code runs but only 4% correct.**
-→ The model generates code (RED) and the system runs it (BLACK), but the model never compares the execution result to the reference. The tree has a BLACK leaf with IoU 0.12, but the model treats it as success because it doesn't look at the execution metadata. RBFC surfaces the IoU score in the BLACK node, making the failure visible and requiring the model to generate a revision (RED) before accepting.
+**Meaning:** The root problem is externally provided — by the user, by a test suite, by an API call. It is observed input, not model-generated.
 
-**Failure: Tree fractals fail at <2%.**
-→ Branching requires N independent execution paths. In a flat context, the model writes one iterative loop (one RED), the system runs it once (one BLACK), and the model declares success. The single execution can only test one path. In RBFC, the system would detect the black-height imbalance (one branch has 0 executions while another has 1) and force the model to generate tests for the under-tested branches.
+**Implementation:** `solve()` sets `root.last_action = "execution"` before any model call. The tree grows from verified ground truth.
 
-**Failure: Chain-of-thought hurts fractal tasks.**
-→ CoT produces RED→RED→RED chains. The model writes paragraphs of reasoning without running anything. In RBFC, this produces consecutive RED nodes — an immediate invariant violation. The system rejects the output and says "you generated without executing." The model is forced to run its code before continuing.
+**What this ensures:** The entire tree is grounded in a real problem. No speculative root — every branch descends from an actual task.
 
-### 7.3 Objective Colors Eliminate Self-Assessment
+### 3.3 Invariant: All Leaves are BLACK
 
-The critical advantage of RED=Generation / BLACK=Execution over subjective confidence scores:
+**Meaning:** Every terminal node in the tree has an execution result. No branch terminates on a generation that was never tested.
 
-| Approach | Who determines the label? | Can the model cheat? |
-|----------|--------------------------|---------------------|
-| Epistemic (verified/speculative) | The model itself | Yes — confidently wrong |
-| Confidence scores | The model itself | Yes — miscalibrated |
-| **RBFC (generation/execution)** | **The runtime system** | **No — objective provenance** |
+**Implementation:** The `_compose()` method checks that every child has a status other than `"pending"` before composing. If a child has no execution result, composition is blocked.
 
-The model cannot claim a generation was "verified" because it doesn't assign the colors. The system assigns BLACK only when it actually ran something and observed the output. This eliminates the known problem of LLM overconfidence — the model's opinion about its own correctness is irrelevant. What matters is what the runtime says.
+**What this prevents:** Silent failures where a sub-problem was generated but never verified, then composed into the final answer. If the tree fractal's left subtree code was generated but never run, the composed renderer will fail — and the system catches this at composition time rather than at delivery time.
 
-### 7.4 Self-Balancing Provides Bounded Reasoning
+### 3.4 Invariant: Equal Black-Height
 
-The red-black balance guarantee ensures that no reasoning path exceeds 2·log₂(n) in depth. For a context of 128 nodes, the maximum depth is 14. For 1024 nodes, it's 20. This is a hard upper bound — not a soft heuristic.
+**Meaning:** All branches from root to leaf have executed the same number of times.
 
-This matters because:
-- It prevents the model from going on unbounded generate-only spirals (too many RED nodes without BLACK children trigger rotation)
-- It ensures roughly equal execution density across all branches (black-height invariant)
-- It makes context compaction deterministic and structure-preserving
+**Implementation:** Before composition, the scheduler checks black-heights across sibling branches. If one branch has been executed 3 times (multiple retries) and another only once, the system flags this imbalance.
 
-### 7.5 Rotation as Execution-Preserving Compression
+**What this prevents:** One branch being thoroughly tested while a sibling is barely tested, then both being composed into a final answer. The branch that was tested once might have a flaky pass, while the branch tested 3 times is genuinely solid. Equal black-height exposes this asymmetry.
 
-Standard compaction (summarization, truncation) is lossy and execution-agnostic. It doesn't distinguish between a generation that was tested and one that wasn't. Tree rotation is different — it restructures without destroying. A rotation changes the *shape* of the tree but preserves the *content* and the *invariants*.
+**In practice:** This doesn't block composition — it's a diagnostic signal. The scheduler can log the imbalance, optionally re-run the under-tested branch, or adjust the acceptance threshold for under-tested branches.
 
-In reasoning terms: rotation promotes the most execution-grounded subtree and demotes generate-only branches. The runtime results (BLACK nodes) always survive. Untested generations (RED nodes without BLACK children) are the ones that get pruned. This is exactly the right thing to throw away — if you never ran it, you don't know if it works, and keeping it is noise.
+### 3.5 Rotation as Re-Prioritization
+
+In a standard red-black tree, rotation restructures the tree to maintain balance during insertion. In RBPT, rotation means something different: **when a branch is stuck (repeated failures), restructure the problem decomposition.**
+
+```python
+def _rotate(self, stuck_node: ProblemNode):
+    """Re-prioritize a stuck branch.
+    
+    When a node has exhausted retries without passing, rotation means:
+    1. Try a different decomposition of the same problem
+    2. Promote a sibling that's passing to take priority
+    3. Come back to the stuck branch with a fresh approach
+    """
+    if stuck_node.black_height >= self.max_retries:
+        # This branch is stuck — try alternative decomposition
+        alternative = self.model.decompose(stuck_node.task, hint="previous approach failed")
+        
+        if alternative.sub_problems:
+            # Replace stuck children with alternative decomposition
+            stuck_node.children = []
+            for sp in alternative.sub_problems:
+                child = ProblemNode(
+                    id=f"{stuck_node.id}.{len(stuck_node.children)}",
+                    task=sp.task,
+                    acceptance_criteria=sp.criteria,
+                    parent=stuck_node,
+                )
+                stuck_node.children.append(child)
+```
+
+This isn't tree rotation in the CLRS sense — it's the *spirit* of rotation applied to problem solving. When the tree becomes unbalanced (one branch is much deeper than others due to retries), restructure to restore balance.
 
 ---
 
-## 8. Proposed Experiments
+## 4. Why This Should Work
 
-### 8.1 Experiment 1: FractalBench with RBFC Context
+### 4.1 Decomposition Reduces Per-Node Complexity
 
-**Hypothesis:** Restructuring the context as a red-black tree with objective generation/execution annotations will improve visual correctness on FractalBench from 4.2% baseline to >15%.
+The tree fractal that fails at <2% requires a single model to produce:
+
+1. Branching logic (function that calls itself twice)
+2. Transformation parameters (angle, scale)
+3. Recursion depth handling
+4. Rendering code
+5. Correct integration of all the above
+
+That's asking for ~200 lines of correct Python in one shot. No wonder it fails.
+
+With RBPT, the system decomposes this into:
+- Node A: "Write a recursive function that calls itself for left and right branches" (simple)
+- Node B: "Given this branching function, render the left subtree" (simple)
+- Node C: "Given this branching function, render the right subtree" (simple)
+- Node D: "Compose A, B, C into a complete tree fractal renderer" (simple)
+
+Each node is a focused task. Each gets its own generate-execute cycle. Each can fail and retry independently. The model that can't write a 200-line program in one shot might write four 20-line programs across four focused attempts.
+
+### 4.2 Execution Feedback Is Objective
+
+Each node receives execution results — not model self-assessment. If the Koch curve renders with IoU 0.34, that's a number. The model sees the number and knows it needs to do better. There's no ambiguity, no overconfidence, no "I think this is probably right."
+
+The system also feeds back the actual rendered image (or error output) to the model on retry. The model can see *what it produced* vs. *what was expected*. This visual feedback loop is what human programmers use when debugging rendering code.
+
+### 4.3 Branching Is System-Managed, Not Model-Managed
+
+The hardest part of tree fractals isn't the math — it's the branching. The model has to hold two independent recursive calls in its working memory and get both right simultaneously. In RBPT, the system handles branching. The model works on one branch at a time.
+
+This maps to how human teams work: you don't ask one engineer to implement the left subtree and right subtree simultaneously. You assign them to two engineers (or two sessions) and compose the results.
+
+### 4.4 Self-Similarity at Every Scale
+
+The generate-execute-verify cycle is the same at every node:
+
+- Root: "Build a fractal renderer" → decompose → execute sub-problems → compose → verify
+- Child: "Implement Koch curve" → generate code → execute → verify → iterate
+- Leaf: "Fix the rotation angle" → generate fix → execute → verify → done
+
+This is a fractal. The same transformation (generate → execute → verify) applies at every level. The tree structure emerges naturally from recursive decomposition. The red-black invariants maintain balance as the tree grows.
+
+### 4.5 Composition Catches Integration Errors
+
+Even if all sub-problems pass individually, the composed solution might fail. RBPT handles this: the compose step is itself a generate-execute cycle. If the composed renderer fails, the system knows the integration is broken and can iterate on the composition (not the individual sub-problems).
+
+This catches a failure mode that single-shot evaluation misses: code that's correct in isolation but broken when combined. The tree fractal's left and right subtree code might both pass individually, but the composed renderer might have parameter mismatches. The compose step catches this.
+
+---
+
+## 5. What This Is Not
+
+### 5.1 Not Tree-of-Thought
+
+Tree-of-Thought (Yao et al., 2023) explores multiple reasoning *paths* within a single model's context. The model generates multiple candidates, evaluates them, and picks the best. It's a search strategy within one generation.
+
+RBPT decomposes a problem into independent *sub-problems*, each solved by a separate generate-execute cycle. The model doesn't explore paths — the system decomposes tasks. The model is called per-node with narrow, focused context.
+
+### 5.2 Not Plan-and-Execute
+
+Plan-and-Execute (Wang et al., 2023) generates a full plan upfront, then executes each step. The plan is a linear sequence: step 1, step 2, step 3.
+
+RBPT generates a tree, not a list. Sub-problems can branch. Branches can be solved in parallel. Failed branches are retried independently. The plan is adaptive — decomposition can be re-attempted if the initial decomposition fails.
+
+### 5.3 Not Recursive Prompting
+
+Recursive prompting (Xu et al., 2024) feeds a model's output back as input in a loop. It's a single thread of generate → feed back → generate → feed back.
+
+RBPT has branching. Multiple sub-problems run independently. The compose step merges results from parallel branches. It's not a loop — it's a tree.
+
+### 5.4 Not Context Engineering
+
+Context engineering (Korthikanti et al., 2022; various prompting strategies) focuses on what information the model sees. RBPT focuses on how problems are decomposed and how results are composed. The model's context at each node is minimal — just the task, acceptance criteria, and previous attempts. The tree exists in the runtime, not in the context.
+
+---
+
+## 6. Proposed Experiments
+
+### 6.1 Experiment 1: Single-Shot vs. Tree Decomposition on FractalBench
+
+**Hypothesis:** Tree decomposition will improve FractalBench visual correctness from 4.2% (single-shot) to >20%.
 
 **Setup:**
-- Same 12 fractals, same models, same evaluation (IoU > 0.95)
-- Replace flat context with RBFC-structured context
-- System enforces generate-then-execute discipline
-- Invariant violations trigger execution requests
-- Execution results include IoU scores visible to the model
+- Same 12 fractals, same models
+- Group A: Single-shot (current FractalBench methodology — one generation, one execution)
+- Group B: RBPT with automatic decomposition (system decides when to branch)
+- Group C: RBPT with manual decomposition (human-specified sub-problems for each fractal)
 
-**Metrics:**
-- Visual correctness (primary)
-- Code execution rate
-- Average invariant violations per response
-- Average iterations to convergence (generate-execute cycles)
-- Context compaction ratio
+**Why Group C:** If Group B doesn't improve but Group C does, the decomposition logic is the bottleneck, not the generate-execute loop. If both improve, the loop is doing real work.
 
-### 8.2 Experiment 2: Branching Recursion Recovery
+**Metrics:** Visual correctness (IoU > 0.95), iterations to pass, total tokens consumed, time to solution.
 
-**Hypothesis:** RBFC will improve tree fractal accuracy from <2% to >10% by making branching structure explicit and enforcing equal execution across branches.
+### 6.2 Experiment 2: Tree Fractals with Forced Decomposition
+
+**Hypothesis:** Pre-specifying the decomposition for tree fractals (branching logic, left subtree, right subtree, compose) will improve accuracy from <2% to >15%.
 
 **Setup:**
-- Focus on the 4 tree fractal types
-- Compare: (a) flat context, (b) RBFC without branching annotations, (c) RBFC with explicit per-branch execution tracking
-- Measure: whether the model produces actual branching recursion vs. iterative approximation, and whether each branch gets independently tested
+- 4 tree fractal types only
+- System always decomposes into 3 sub-problems (branch, left, right)
+- Each sub-problem gets up to 5 generate-execute cycles
+- Compare to single-shot baseline
 
-### 8.3 Experiment 3: Generate-Execute Discipline on Code Tasks
+**Why this matters:** If the model can solve each sub-problem individually but can't solve the whole, that proves the bottleneck is problem complexity, not model capability.
 
-**Hypothesis:** RBFC will reduce the "write code and claim it works" failure mode on standard coding benchmarks by forcing execution between generations.
+### 6.3 Experiment 3: Scaling with Tree Depth
 
-**Setup:**
-- HumanEval, MBPP, SWE-bench (verified subset)
-- Compare: (a) standard agent (generate, then maybe test), (b) RBFC agent (generate, MUST execute, iterate)
-- Measure: pass rates, iterations to pass, tokens wasted on untested code
-
-### 8.4 Experiment 4: Context Compaction Quality
-
-**Hypothesis:** Rotation-based compaction preserves more execution history than summarization at equivalent compression ratios.
+**Hypothesis:** RBPT improvement scales with problem complexity — deeper trees (more decomposition levels) help more on harder problems.
 
 **Setup:**
-- Take 100 agent sessions with 50+ turns each
-- Compress to 25%, 10%, 5% of original size using: (a) summarization, (b) sliding window, (c) RBFC rotation
-- Measure: execution result recall (how many BLACK nodes survive), decision correctness on retrospective questions, ability to resume interrupted tasks
+- Problems at 3 complexity levels: single function, multi-function, multi-module
+- Measure success rate at each level for: (a) single-shot, (b) 1-level decomposition, (c) 2-level decomposition
+- Predict: single-shot degrades with complexity, RBPT degrades less or stays flat
+
+### 6.4 Experiment 4: Decomposition Quality
+
+**Hypothesis:** The model can decompose problems correctly at least 60% of the time, and incorrect decompositions are recoverable (the system retries with a different decomposition).
+
+**Setup:**
+- 50 diverse problems (not just fractals — also debugging, refactoring, API integration)
+- Let the model decompose, execute, verify
+- Measure: decomposition correctness (did the sub-problems cover the full problem?), recovery rate (when decomposition fails, does re-decomposition succeed?), end-to-end success rate
+
+### 6.5 Experiment 5: Comparison to Existing Approaches
+
+**Hypothesis:** RBPT outperforms chain-of-thought, ReAct, and plan-and-execute on recursive tasks, with comparable performance on non-recursive tasks.
+
+**Setup:**
+- Mix of recursive and non-recursive tasks
+- 5 approaches: single-shot, CoT, ReAct, plan-and-execute, RBPT
+- Measure: success rate, token efficiency (success per token), time to solution
 
 ---
 
-## 9. Potential Counterarguments & Limitations
+## 7. Implementation with Existing Agent Frameworks
 
-### 9.1 "Models Can't Maintain Tree Structure in Attention"
+### 7.1 Nullclaw (Zig)
 
-Valid concern. Flattening a tree back to a linear sequence for the LLM loses structural information. However:
-- Depth-annotated traversal preserves hierarchy (indentation + [R]/[B] markers)
-- The annotations are a lightweight encoding — 3-4 characters per node, negligible token overhead
-- The tree structure is primarily for the *system* (compaction, validation, enforcement) — the model sees an annotated linear context
-- The model doesn't need to *understand* the tree. It needs to read [B] results and generate [R] output. The system handles the tree mechanics.
+Nullclaw already has `delegate_task` for spawning sub-agents. The tree maps directly:
 
-### 9.2 "This Prevents Creative Exploration"
+```zig
+// Pseudocode for RBPT in nullclaw
+fn solveNode(allocator: std.mem.Allocator, node: *ProblemNode) []const u8 {
+    // Try decomposition
+    const sub_problems = try decompose(allocator, node.task);
+    
+    if (sub_problems.len > 1) {
+        // Branch: solve each sub-problem as a delegated task
+        var results = std.ArrayList([]const u8).init(allocator);
+        for (sub_problems) |sp| {
+            const child = ProblemNode{ .task = sp, .parent = node };
+            const result = delegate_task(child);  // Independent generate-execute cycle
+            results.append(result);
+        }
+        // Compose
+        return compose(allocator, node.task, results.items);
+    } else {
+        // Leaf: generate-execute loop
+        return generateExecuteLoop(allocator, node);
+    }
+}
 
-Valid. The invariant "no consecutive REDs" means every generation must be followed by an execution. For purely creative tasks (writing poetry, brainstorming), this is unnecessarily strict.
+fn generateExecuteLoop(allocator: std.mem.Allocator, node: *ProblemNode) []const u8 {
+    for (0..max_retries) |_| {
+        const code = llm.generate(node.task);  // RED
+        const result = executor.run(code);       // BLACK
+        if (checkAcceptance(result, node.criteria)) {
+            return code;
+        }
+        node.feedBack(result);  // BLACK result informs next RED generation
+    }
+    return node.bestAttempt();
+}
+```
 
-Mitigations:
-- **Configurable strictness:** Allow N consecutive RED nodes for "exploration mode" before requiring BLACK
-- **Soft enforcement:** Instead of rejecting output, surface a warning: "You've generated 3 times without executing. Consider running something."
-- **Domain detection:** Apply strict RBFC for code/math tasks, relaxed mode for creative tasks
-- **The model can still explore — it just needs to ground each step.** "Try this, run it, see what happens, try that" is still exploration — it's just *tested* exploration.
+### 7.2 Minimal Python Implementation
 
-### 9.3 "This Is Just 'Write Code Then Run It'"
+```python
+class RBPTAgent:
+    def solve(self, task: str, criteria: str, depth: int = 0) -> str:
+        if depth > self.max_depth:
+            return self._generate_execute_loop(task, criteria)
+        
+        # Ask model: should this be decomposed?
+        decomposition = self.model.decompose(task)
+        
+        if decomposition.should_decompose and decomposition.sub_problems:
+            results = {}
+            for sp in decomposition.sub_problems:
+                results[sp.name] = self.solve(sp.task, sp.criteria, depth + 1)
+            
+            # Compose
+            composition = self.model.compose(task, results)
+            result = self.executor.run(composition)
+            
+            if self._check(result, criteria):
+                return composition
+            else:
+                # Composition failed — try again with execution feedback
+                return self._generate_execute_loop(
+                    f"{task}\n\nAttempted composition failed.\n"
+                    f"Sub-problem results: {results}\n"
+                    f"Execution error: {result.stderr}",
+                    criteria
+                )
+        else:
+            return self._generate_execute_loop(task, criteria)
+    
+    def _generate_execute_loop(self, task: str, criteria: str) -> str:
+        for attempt in range(self.max_retries):
+            code = self.model.generate(task)
+            result = self.executor.run(code)
+            
+            if self._check(result, criteria):
+                return code
+            
+            # Feed execution result back for next attempt
+            task = f"{task}\n\nPrevious attempt failed.\nCode:\n{code}\nResult: {result.stdout}\nError: {result.stderr}"
+        
+        return code  # Best effort
+```
 
-Partially true — the core idea is simple. But the *tree structure* and *rotation-based compaction* go beyond a simple workflow rule:
-
-- The simple rule "write code, then run it" doesn't handle branching (multiple parallel executions)
-- The simple rule doesn't provide bounded reasoning depth
-- The simple rule doesn't give you structure-preserving compaction
-- The simple rule doesn't enforce equal testing across branches
-
-RBFC is a *data structure* that encodes these properties mechanically. The model doesn't need to follow a rule — the system enforces it through tree invariants. That's the difference between a convention and a constraint.
-
-### 9.4 "Overhead of Tree Maintenance"
-
-Red-black insertion and rotation are O(log n) — negligible compared to LLM inference time (typically 1-30 seconds). The validation step is O(n), also negligible. For a context of 128 nodes, validation touches 128 nodes — this is microseconds.
-
-### 9.5 "What About Non-Code Tasks?"
-
-Not all reasoning involves executable code. For tasks like analysis, planning, or conversation:
-
-- **Analysis:** The "execution" can be a verification step — checking a claim against a document, running a search, asking the user for confirmation. The BLACK node is still an objective outcome.
-- **Planning:** The "execution" is attempting the plan and observing what happens. If you can't run it, ask the user to evaluate it — their response is a BLACK node.
-- **Conversation:** The user's reply is always BLACK (observed input). The model's response is always RED (generation). Natural conversation already alternates RED-BLACK. RBFC makes this alternation explicit and enforceable.
-
-### 9.6 "What If Execution Is Expensive?"
-
-Some operations are costly (API calls, GPU inference, long-running tests). Mitigations:
-- **Dry-run BLACK nodes:** A syntax check or type check counts as a lightweight execution — it's BLACK because the runtime produced the result, even if it didn't fully execute
-- **Cached executions:** If the same code was already executed, reuse the BLACK node
-- **Speculative branches:** Allow RED-only subtrees up to depth 2, then require at least one BLACK. This lets the model explore cheaply before committing to expensive runs
-
----
-
-## 10. Connection to Existing Work
-
-### 10.1 Iterated Function Systems
-
-RBFC is an IFS applied to reasoning. The red-black invariants are the contraction maps. Each iteration of the agent loop applies the same transformation (generate → execute) to produce a self-similar structure. The tree's attractor is the final execution-confirmed answer.
-
-### 10.2 Test-Driven Development as Fractal
-
-The RBFC cycle mirrors TDD:
-1. **RED (generation):** Write code
-2. **BLACK (execution):** Run the test
-3. **RED (generation):** Fix the failing test
-4. **BLACK (execution):** Run the test again → pass
-
-This cycle repeats at every level — unit tests, integration tests, end-to-end tests. Each level follows the same generate-execute pattern. TDD practitioners have informally discovered fractal reasoning — RBFC formalizes it as a computational structure.
-
-### 10.3 Duality with Constraint Composite Graphs
-
-The CCM paper in this repository proposes DAG-based decision extraction. RBFC is complementary:
-- CCM captures *what was decided* (content)
-- RBFC captures *what was generated vs. executed* (process)
-- Together, a CCG embedded in an RBFC would provide both semantic and execution provenance
-
----
-
-## 11. Implementation Roadmap
-
-### Phase 1: Annotation Layer (Week 1-2)
-- Add [R]/[B] provenance tracking to existing agent framework
-- System assigns colors based on message source (model vs. runtime)
-- Surface execution metadata (exit codes, IoU, latency) in BLACK nodes
-- Log invariant violations (read-only, no enforcement yet)
-- Measure: do models produce better output when they can see execution results annotated in context?
-
-### Phase 2: Invariant Enforcement (Week 3-4)
-- Implement RBFCTree data structure
-- Reject consecutive RED outputs — force execution between generations
-- Require BLACK leaves — no branch terminates without a test result
-- Measure: impact on code quality, iteration count, token usage
-
-### Phase 3: Rotation-Based Compaction (Week 5-6)
-- Implement rotation logic
-- Replace summarization with rotation-based compaction
-- Benchmark: execution result retention vs. summarization at equivalent compression
-- Measure: can interrupted tasks be resumed with more context fidelity?
-
-### Phase 4: Branching Support (Week 7-8)
-- Implement parallel branch tracking (multiple children per node)
-- Enforce equal black-height across branches
-- Test on tree fractals and multi-step debugging tasks
-- Full evaluation against all four proposed experiments
+The entire agent is ~50 lines. The tree emerges from recursive decomposition. The red-black invariants are enforced by the loop structure (generate always followed by execute) and the composition check (all children must have results).
 
 ---
 
-## 12. Conclusion
+## 8. Limitations
 
-We propose the Red-Black Fractal Context — a self-balancing tree architecture for LLM agent reasoning where node colors encode objective operational provenance: **RED = what the model generated, BLACK = what the runtime executed.**
+### 8.1 Decomposition Quality Is the Bottleneck
 
-The core insight is that the gap between pattern matching and recursive abstraction (76% vs. 4% on FractalBench) is fundamentally a context architecture problem: models generate code but never properly execute and iterate. By structuring context as a red-black tree with provenance-based coloring, we:
+The system relies on the model to decompose problems correctly. If the model decomposes a tree fractal into "draw the top half" and "draw the bottom half" instead of "branching logic, left subtree, right subtree," the sub-problems won't help. The decomposition model needs to understand problem structure — which is itself a hard problem.
 
-1. **Make generate-execute alternation structural** — invariant #4 prevents generate-only spirals by construction
-2. **Make branching explicit** — each reasoning branch is a subtree with its own execution chain
-3. **Guarantee bounded depth** — self-balancing ensures O(log n) reasoning paths with equal execution density
-4. **Provide principled compaction** — rotation preserves execution results while pruning untested generations
-5. **Eliminate self-assessment** — colors are determined by provenance, not model confidence
+**Mitigation:** For known problem types (fractals, recursive algorithms), decomposition templates can be provided. The system can also try multiple decompositions if the first one fails.
 
-The fractal connection is not metaphorical. Each subtree of an RBFC is itself a valid red-black tree — the same generate-execute rules apply at every node, at every depth. This self-similarity is exactly the property that fractals exploit to generate infinite complexity from finite rules. If the generate-execute cycle has fractal structure — and test-driven development, the scientific method, and iterative debugging all suggest it does — then reasoning architecture should too.
+### 8.2 Composition Is Hard
 
-The hypothesis is falsifiable: if restructuring context as a generate-execute tree does not improve FractalBench performance, the gap is indeed a model capability problem, not an architectural one. Either way, we learn something.
+Solving sub-problems independently doesn't guarantee the composed solution works. Integration bugs, parameter mismatches, and interface incompatibilities can cause composition failures. The compose step needs its own generate-execute cycle, which adds overhead.
+
+**Mitigation:** The compose step receives all child results and their execution metadata. It can see what worked and what didn't. Failed composition triggers a new generation that accounts for integration issues.
+
+### 8.3 Token Overhead
+
+Each generate-execute cycle consumes tokens. A tree with 5 nodes, each with 3 attempts, means 15 model calls. The total token count might exceed a single-shot attempt. The question is whether the accuracy improvement justifies the token cost.
+
+**Mitigation:** Early termination (don't retry obviously hopeless branches), result caching (reuse passing sub-problem results across attempts), and decomposition depth limits.
+
+### 8.4 Not All Problems Are Decomposable
+
+Some problems resist decomposition — they require holistic understanding that breaks when split into parts. Poetry, creative writing, and some mathematical proofs don't benefit from being broken into sub-problems.
+
+**Mitigation:** The decomposition step can return "not decomposable" and fall back to single-node generate-execute. The system should be able to detect when decomposition is hurting and stop.
+
+### 8.5 The Model Still Needs to Code
+
+RBPT doesn't write code for the model. It makes each coding task smaller and more focused, but the model still needs to produce correct code at each node. If the model fundamentally can't write a recursive function, no amount of decomposition will fix that.
+
+**Mitigation:** This is a feature, not a bug. If RBPT improves tree fractals from <2% to 15% but not to 90%, that tells us something important: 13% of the gap was architectural, 85% is model capability. That's a more precise diagnosis than the current "models lack recursive abstraction" claim.
+
+---
+
+## 9. Related Work
+
+### 9.1 Agent Decomposition Strategies
+
+| Approach | Decomposition | Execution | Composition | Branching |
+|----------|--------------|-----------|-------------|-----------|
+| Single-shot | None | One shot | N/A | None |
+| Chain-of-thought | Linear steps | Implicit | Sequential | None |
+| ReAct | Linear steps | Explicit | Sequential | None |
+| Plan-and-execute | Linear plan | Explicit | Sequential | None |
+| Tree-of-thought | Multiple paths | Implicit | Best-path selection | Parallel exploration |
+| **RBPT (ours)** | **Tree of sub-problems** | **Explicit per node** | **Multi-branch merge** | **Recursive decomposition** |
+
+### 9.2 Self-Similar Problem Solving
+
+The idea that complex problems should be solved by decomposing them into self-similar sub-problems is not new. It's the basis of:
+- Divide-and-conquer algorithms (merge sort, quicksort)
+- Recursive programming (functions that call themselves)
+- MapReduce (split, process, merge)
+- Hierarchical task networks in AI planning (HTN, 1990s)
+
+RBPT applies this principle to LLM agents with the addition of execution verification at every level. Traditional divide-and-conquer trusts the decomposition — RBPT verifies each piece before composing.
+
+### 9.3 Software Engineering Practices
+
+RBPT mirrors several well-established practices:
+- **Test-driven development:** Write test (BLACK), write code (RED), run test (BLACK), iterate
+- **Code review:** Submit code (RED), get review (BLACK), revise (RED), approve (BLACK)
+- **CI/CD:** Commit (RED), build and test (BLACK), deploy (RED), monitor (BLACK)
+- **Microservices:** Decompose monolith into services (tree), each independently deployable (per-node execution), composed via API (compose step)
+
+The insight is that these practices exist because they work for humans. RBPT applies the same principles to LLM agents.
+
+---
+
+## 10. Conclusion
+
+We propose Red-Black Problem Trees: an orchestration architecture that decomposes agent problem-solving into a self-balancing tree of independent generate-execute cycles. The model operates on narrow, focused sub-problems. The system handles decomposition, execution, verification, retry, and composition.
+
+The key design principle: **the model doesn't see the tree.** The tree is the system's control flow, not the model's context. The model receives a task, produces output, and the system manages everything else. This separates the concern of *what to work on* (the system's job) from *how to solve it* (the model's job).
+
+The red-black invariants — no consecutive generations, equal execution across branches, measured outcomes at every leaf — are scheduling constraints enforced by the runtime, not rules the model must follow. The model can't violate them because the system doesn't have code paths that allow violations.
+
+The fractal connection is structural, not metaphorical. Each subtree is an independent problem-solving cycle with the same generate-execute-verify pattern. The same transformation applies at every depth. Complex problems are solved by recursively decomposing into self-similar sub-problems, each verified independently, then composed. This is divide-and-conquer with execution verification at every level.
+
+The hypothesis is concrete and falsifiable: if tree decomposition with per-node execution feedback doesn't improve recursive task performance, the gap is model capability, not architecture. The experiment takes ~2 weeks to run. The implementation is ~50 lines of Python. There is no reason not to test it.
 
 ---
 
@@ -780,12 +685,13 @@ The hypothesis is falsifiable: if restructuring context as a generate-execute tr
 
 - Ondras, J., & Šuppa, M. (2025). FractalBench: Diagnosing Visual-Mathematical Reasoning Through Recursive Program Synthesis. *arXiv:2511.06522v1*.
 - Cormen, T. H., et al. (2009). Introduction to Algorithms (3rd ed.). MIT Press. Chapter 13: Red-Black Trees.
-- Barnsley, M. F. (2014). Fractals Everywhere. Dover Publications.
+- Yao, S., et al. (2023). Tree of Thoughts: Deliberate Problem Solving with Large Language Models. *NeurIPS*.
+- Wang, L., et al. (2023). Plan-and-Solve Prompting: Improving Zero-Shot Chain-of-Thought Reasoning by Large Language Models. *ACL*.
+- Xu, Y., et al. (2024). Recursive Prompting: A Technique for Improving Multi-Step Reasoning in Large Language Models.
 - Beck, K. (2002). Test-Driven Development: By Example. Addison-Wesley.
-- Wei, J., et al. (2022). Chain-of-Thought Prompting Elicits Reasoning in Large Language Models. *NeurIPS*.
 
 ---
 
-*Status: Hypothesis paper. No implementation. No benchmarks. Ideas thrown at the wall.*
+*Status: Hypothesis with concrete implementation path. ~50 line Python sketch. No benchmarks yet.*
 
 *Last updated: 2026-04-24*
