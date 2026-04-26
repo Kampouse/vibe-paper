@@ -44,6 +44,15 @@ Sometimes you need to throw ideas at the wall and see what sticks. This is the w
 
 ---
 
+### [Standing Intentions](./standing-intentions/paper.md)
+An architecture for autonomous LLM agents that maintain persistent internal state through homeostatic drives, act on standing intentions without external prompting, and improve through evolving inspectable skill artifacts — all without modifying the model or its runtime.
+
+**Key idea:** Current agents are reactive stateless functions. We formalize the drive loop (continuous internal monitoring), standing intentions (persistent commitments that don't consume working memory), three-tier execution (route decisions to the cheapest capable processor), and skill artifact evolution (the meta-agent closes the loop by revising guidance based on grounded evaluator feedback). Fixed model, fixed runtime, evolving artifacts.
+
+**Status:** Concept paper with formalization. No implementation. No benchmarks.
+
+---
+
 ### [Red-Black Fractal Reasoning](./red-black-fractal-reasoning/paper.md)
 A hypothesis for structuring LLM agent context as a self-balancing red-black tree, where node colors encode epistemic status (verified observation vs. speculative inference) and tree invariants enforce reasoning discipline. Inspired by FractalBench's finding that models achieve 76% syntactic but only 4% semantic correctness on recursive tasks.
 
